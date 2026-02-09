@@ -27,7 +27,17 @@ const App = () => {
   const [reports, setReports] = useState([]);
   const [activeTab, setActiveTab] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [selectedDate, setSelectedDate] = useState('2026-02-10');
+  
+  // 오늘 날짜를 YYYY-MM-DD 형식으로 가져오기
+  const getTodayStr = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [selectedDate, setSelectedDate] = useState(getTodayStr());
   const [errorMessage, setErrorMessage] = useState(null);
   
   // 리포트 내부 뷰 모드 (30초 간격 vs 당일 누적)
@@ -46,7 +56,7 @@ const App = () => {
   
   // --- Calendar State & Ref ---
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [currentViewDate, setCurrentViewDate] = useState(new Date(2026, 1, 10)); // 2026-02-10 기준
+  const [currentViewDate, setCurrentViewDate] = useState(new Date()); 
   const calendarRef = useRef(null); // 외부 클릭 감지를 위한 ref
 
   // --- Helpers for Formatting & Color ---
@@ -179,6 +189,12 @@ const App = () => {
 
   const handleDateSelect = (date) => {
     if (!date) return;
+    
+    // 미래 날짜 선택 방지 체크 (방어적 로직)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (date > today) return;
+
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
@@ -441,13 +457,23 @@ const App = () => {
                   <div className="grid grid-cols-7 gap-1">
                     {generateCalendarDays().map((date, i) => {
                       if (!date) return <div key={`empty-${i}`} className="p-2"></div>;
+                      
                       const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
                       const isSelected = selectedDate === dateStr;
+                      
+                      // 미래 날짜 체크
+                      const today = new Date();
+                      today.setHours(0, 0, 0, 0);
+                      const isFuture = date > today;
+
                       return (
                         <button 
                           key={dateStr}
-                          onClick={() => handleDateSelect(date)}
-                          className={`p-2 text-[11px] font-bold rounded-lg transition-all ${isSelected ? 'bg-rose-500 text-white shadow-md shadow-rose-200 scale-110' : 'hover:bg-slate-50 text-slate-600'}`}
+                          onClick={() => !isFuture && handleDateSelect(date)}
+                          disabled={isFuture}
+                          className={`p-2 text-[11px] font-bold rounded-lg transition-all 
+                            ${isSelected ? 'bg-rose-500 text-white shadow-md shadow-rose-200 scale-110' : 
+                              isFuture ? 'text-slate-200 cursor-not-allowed opacity-50' : 'hover:bg-slate-50 text-slate-600'}`}
                         >
                           {date.getDate()}
                         </button>
