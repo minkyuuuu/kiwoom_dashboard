@@ -14,7 +14,8 @@ import {
   MousePointer2,
   Calendar as CalendarIcon,
   ChevronRight,
-  LayoutGrid
+  LayoutGrid,
+  X
 } from 'lucide-react';
 
 // --- Gemini API Configuration ---
@@ -26,6 +27,7 @@ const App = () => {
   const [activeTab, setActiveTab] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedDate, setSelectedDate] = useState('2026-02-10');
+  const [errorMessage, setErrorMessage] = useState(null);
   
   // 리포트 내부 뷰 모드 (30초 간격 vs 당일 누적)
   const [reportViewMode, setReportViewMode] = useState('realtime');
@@ -80,6 +82,7 @@ const App = () => {
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
     updateSlot(activeSlot, files);
+    e.target.value = ''; // Reset input
   };
 
   const updateSlot = (slotId, files) => {
@@ -95,7 +98,8 @@ const App = () => {
 
     setSlots(prev => {
       if (slotId === 'realtime' || slotId === 'cumulative') {
-        return { ...prev, [slotId]: [...prev[slotId], ...newItems].slice(0, 2) };
+        const existing = prev[slotId] || [];
+        return { ...prev, [slotId]: [...existing, ...newItems].slice(0, 2) };
       } else {
         return { ...prev, [slotId]: newItems[0] };
       }
@@ -134,13 +138,23 @@ const App = () => {
     const hasThemes = slots.themesViews || slots.themesChange;
 
     if (!(hasRealtime || hasCumulative) || !hasThemes) {
-      alert("종목 순위 이미지와 테마 이미지를 각각 최소 1장 이상 업로드해주세요.");
+      setErrorMessage("종목 순위 이미지와 테마 이미지를 각각 최소 1장 이상 업로드해주세요.");
       return;
     }
 
     setIsProcessing(true);
+    setErrorMessage(null);
+
     try {
       const payloadParts = [];
+      
+      const fileToBase64 = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+      });
+
       const addToPayload = async (slotId, items, description) => {
         if (!items) return;
         const list = Array.isArray(items) ? items : [items];
@@ -174,7 +188,22 @@ const App = () => {
         주의: 등락 수치(ChangeAmount)는 부호(+ 또는 -)를 포함하여 추출하세요.
       `;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`, {
+      // Exponential backoff implementation for API calls
+      const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
+        try {
+          const response = await fetch(url, options);
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+          return await response.json();
+        } catch (error) {
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return fetchWithRetry(url, options, retries - 1, backoff * 2);
+          }
+          throw error;
+        }
+      };
+
+      const result = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -184,17 +213,18 @@ const App = () => {
         })
       });
 
-      const result = await response.json();
       const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!rawText) throw new Error("AI 분석 실패");
       
       const parsedData = JSON.parse(rawText);
       const generateAutoTitle = (time) => {
         if (!time) return "시장 리포트";
-        const hour = parseInt(time.split(':')[0]);
+        const parts = time.split(':');
+        const hour = parseInt(parts[0]);
         let period = "마감";
         if (hour < 12) period = "오전";
         else if (hour >= 12 && hour < 14) period = "점심";
+        else if (hour >= 14 && hour < 16) period = "오후";
         return `${period} (${time})`;
       };
 
@@ -229,18 +259,11 @@ const App = () => {
       setSlots({ realtime: [], cumulative: [], themesViews: null, themesChange: null });
     } catch (error) {
       console.error(error);
-      alert("분석 중 오류가 발생했습니다. 이미지를 다시 확인해주세요.");
+      setErrorMessage("분석 중 오류가 발생했습니다. 이미지가 선명한지, 그리고 API 설정이 올바른지 확인해주세요.");
     } finally {
       setIsProcessing(false);
     }
   };
-
-  const fileToBase64 = (file) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = error => reject(error);
-  });
 
   const activeReport = reports.find(r => r.id === activeTab);
 
@@ -254,27 +277,35 @@ const App = () => {
         onClick={() => setActiveSlot(id)}
         onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
         onDragLeave={() => setIsDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setIsDragOver(false); const files = Array.from(e.dataTransfer.files); if (files.length > 0) { setActiveSlot(id); updateSlot(id, files); } }}
-        className={`group p-5 rounded-[20px] border-2 transition-all cursor-pointer relative ${
-          isActive ? 'border-rose-400 bg-white shadow-xl shadow-rose-100/50 scale-[1.02] z-10' 
-                   : isDragOver ? 'border-blue-400 bg-blue-50/30 shadow-lg' : 'border-slate-50 bg-white hover:border-slate-200'
+        onDrop={(e) => { 
+          e.preventDefault(); 
+          setIsDragOver(false); 
+          const files = Array.from(e.dataTransfer.files); 
+          if (files.length > 0) { 
+            setActiveSlot(id); 
+            updateSlot(id, files); 
+          } 
+        }}
+        className={`group p-4 rounded-2xl border-2 transition-all cursor-pointer relative ${
+          isActive ? 'border-rose-400 bg-white shadow-lg shadow-rose-100/50 scale-[1.02] z-10' 
+                   : isDragOver ? 'border-blue-400 bg-blue-50/30 shadow-lg' : 'border-slate-100 bg-white hover:border-slate-200'
         }`}
       >
-        <div className="flex justify-between items-center mb-3">
-          <span className={`text-[13px] font-bold ${isActive ? 'text-rose-500' : 'text-slate-600'}`}>
-            {label} {max > 1 && items.length > 0 && <span className="text-[11px] opacity-60 ml-1">({items.length}/{max})</span>}
+        <div className="flex justify-between items-center mb-2">
+          <span className={`text-[12px] font-bold ${isActive ? 'text-rose-500' : 'text-slate-600'}`}>
+            {label} {max > 1 && items.length > 0 && <span className="text-[10px] opacity-60 ml-1">({items.length}/{max})</span>}
           </span>
           {isActive && <div className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-pulse"></div>}
         </div>
         <div 
           onClick={(e) => { e.stopPropagation(); handleSlotClick(id); }}
-          className={`border-2 border-dashed rounded-xl py-6 flex flex-col items-center justify-center gap-2 transition-colors
-            ${isActive ? 'border-rose-100 bg-rose-50/30' : isDragOver ? 'border-blue-200 bg-blue-50/50' : 'border-slate-100 bg-slate-50/50 group-hover:bg-slate-50'}`}
+          className={`border-2 border-dashed rounded-xl py-4 flex flex-col items-center justify-center gap-1 transition-colors
+            ${isActive ? 'border-rose-100 bg-rose-50/30' : isDragOver ? 'border-blue-200 bg-blue-50/50' : 'border-slate-50 bg-slate-50/50 group-hover:bg-slate-50'}`}
         >
           {items.length === 0 ? (
             <div className="text-center">
               <Upload className={`w-4 h-4 mx-auto mb-1 ${isActive ? 'text-rose-300' : isDragOver ? 'text-blue-400' : 'text-slate-300'}`} />
-              <span className="text-[9px] font-black text-slate-400 tracking-widest uppercase">CLICK / DROP</span>
+              <span className="text-[9px] font-black text-slate-400 tracking-widest uppercase">클릭 또는 드롭</span>
             </div>
           ) : (
             <div className="flex flex-wrap gap-2 px-2">
@@ -299,30 +330,43 @@ const App = () => {
   return (
     <div className="flex h-screen bg-[#F8FAFC] overflow-hidden font-sans text-slate-900">
       
+      {/* Custom Error Message Toast */}
+      {errorMessage && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 border border-white/10">
+            <AlertCircle className="text-rose-400" size={18} />
+            <span className="text-sm font-medium">{errorMessage}</span>
+            <button onClick={() => setErrorMessage(null)} className="ml-2 hover:text-rose-400 transition-colors">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
-      <aside className="w-[320px] bg-white border-r border-slate-100 flex flex-col overflow-y-auto z-20 shadow-sm">
+      <aside className="w-[320px] bg-white border-r border-slate-100 flex flex-col overflow-y-auto z-20 shadow-sm shrink-0">
         <div className="p-6 bg-[#121926] text-white">
           <div className="flex items-center gap-2 mb-6">
             <LayoutGrid className="w-5 h-5 text-rose-400" />
             <h1 className="text-lg font-bold tracking-tight">Market Analyzer</h1>
           </div>
           <div className="space-y-4">
-            <button className="w-full flex items-center justify-between bg-[#1E293B] hover:bg-[#2D3A4F] px-4 py-3 rounded-xl transition-all border border-slate-700/50 group">
+            <div className="w-full flex items-center justify-between bg-[#1E293B] px-4 py-3 rounded-xl border border-slate-700/50 group">
               <div className="flex items-center gap-3">
                 <CalendarIcon className="w-4 h-4 text-slate-400 group-hover:text-rose-400" />
                 <span className="text-sm font-medium tracking-wide">{selectedDate}</span>
               </div>
               <ChevronRight className="w-4 h-4 text-slate-500" />
-            </button>
+            </div>
             <div className="flex items-center gap-2 px-1">
               <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-              <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase">Cloud Sync Active</span>
+              <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase">분석 준비 완료</span>
             </div>
           </div>
         </div>
 
         <div className="p-5 flex flex-col gap-6 flex-1 border-b border-slate-50">
-          <div className="px-1"><h2 className="text-[10px] font-black text-slate-400 tracking-[0.2em] uppercase">UPLOAD CATEGORY</h2></div>
+          <div className="px-1"><h2 className="text-[10px] font-black text-slate-400 tracking-[0.2em] uppercase">분류별 업로드</h2></div>
           <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" multiple accept="image/*" />
           <div className="flex flex-col gap-3">
             <UploadSlot id="realtime" label="30초간격 (종목)" current={slots.realtime} max={2} />
@@ -331,8 +375,13 @@ const App = () => {
             <UploadSlot id="themesChange" label="등락률순 (테마)" current={slots.themesChange} />
           </div>
           <div className="pt-2">
-            <button onClick={runAnalysis} disabled={isProcessing} className={`w-full py-4 rounded-[20px] font-bold flex items-center justify-center gap-2 transition-all shadow-lg ${isProcessing ? 'bg-slate-200 text-slate-400' : 'bg-rose-500 text-white hover:bg-rose-600 active:scale-95 shadow-rose-100'}`}>
-              {isProcessing ? <><Loader2 className="animate-spin" size={18} /> 분석중...</> : <><Plus size={18} strokeWidth={3} /> 분석 리포트 생성</>}
+            <button 
+              onClick={runAnalysis} 
+              disabled={isProcessing} 
+              className={`w-full py-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg 
+                ${isProcessing ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-rose-500 text-white hover:bg-rose-600 active:scale-95 shadow-rose-100'}`}
+            >
+              {isProcessing ? <><Loader2 className="animate-spin" size={18} /> 분석중...</> : <><Plus size={18} strokeWidth={3} /> 리포트 생성</>}
             </button>
           </div>
         </div>
@@ -344,7 +393,11 @@ const App = () => {
           <nav className="p-4 md:px-10 bg-white border-b border-slate-100 overflow-x-auto">
             <div className="flex gap-2 max-w-7xl mx-auto">
               {reports.map((report) => (
-                <button key={report.id} onClick={() => { setActiveTab(report.id); setReportViewMode(report.data.realtimeStocks.length > 0 ? 'realtime' : 'cumulative'); }} className={`flex items-center gap-2 px-6 py-2.5 rounded-full font-bold whitespace-nowrap transition-all ${activeTab === report.id ? 'bg-[#121926] text-white shadow-xl scale-105' : 'bg-white text-slate-500 border border-slate-100 shadow-sm'}`}>
+                <button 
+                  key={report.id} 
+                  onClick={() => { setActiveTab(report.id); setReportViewMode(report.data.realtimeStocks.length > 0 ? 'realtime' : 'cumulative'); }} 
+                  className={`flex items-center gap-2 px-6 py-2.5 rounded-full font-bold whitespace-nowrap transition-all ${activeTab === report.id ? 'bg-[#121926] text-white shadow-xl scale-105' : 'bg-white text-slate-500 border border-slate-100 shadow-sm hover:border-slate-300'}`}
+                >
                   <Clock size={16} /> {report.title}
                 </button>
               ))}
@@ -355,28 +408,40 @@ const App = () => {
         <div className="flex-1 overflow-y-auto p-6 md:p-10">
           {!activeReport ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-6">
-              <div className="w-32 h-32 bg-white rounded-[40px] shadow-2xl shadow-slate-200/50 flex items-center justify-center border border-slate-50 relative"><Search className="w-12 h-12 text-slate-100" /></div>
-              <div className="text-center"><p className="text-2xl font-black text-slate-300 tracking-tight">{selectedDate}</p><p className="text-[13px] font-medium text-slate-400 mt-2">데이터를 분류하여 클라우드에 등록하세요</p></div>
+              <div className="w-32 h-32 bg-white rounded-[40px] shadow-2xl shadow-slate-200/50 flex items-center justify-center border border-slate-50 relative">
+                <Search className="w-12 h-12 text-slate-100" />
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-black text-slate-300 tracking-tight">{selectedDate}</p>
+                <p className="text-[13px] font-medium text-slate-400 mt-2">스크린샷을 업로드하고 AI 분석 리포트를 확인하세요</p>
+              </div>
             </div>
           ) : (
-            <div className="max-w-6xl mx-auto space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="max-w-6xl mx-auto space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
               {/* 마켓 지수 영역 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {['kospi', 'kosdaq'].map(market => {
                   const mKey = market.toUpperCase();
+                  const value = activeReport.data.marketStatus[market];
                   const change = activeReport.data.marketStatus[`${market}Change`];
                   const amount = activeReport.data.marketStatus[`${market}ChangeAmount`];
+                  
+                  // 정보 유무 확인 (기본값 "-", "0", "0.00" 등은 공백 처리)
+                  const hasValue = value && value !== "-" && value !== "0" && value !== 0;
+                  const hasAmount = amount && amount !== "0.00" && amount !== "+0.00" && amount !== "-0.00";
+                  const hasChange = change && change !== "0%" && change !== "0.00%";
+
                   const color = getTrendColor(change);
                   return (
-                    <div key={market} className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
+                    <div key={market} className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 min-h-[120px]">
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">{mKey} MARKET</p>
                       <div className="flex items-center gap-8">
-                        <span className={`text-3xl font-black ${color}`}>{activeReport.data.marketStatus[market] || "-"}</span>
-                        <div className="flex flex-col text-[13px] font-bold leading-tight items-end">
-                          {/* 첫번째 줄: 기호 포함 (Gemini 추출 결과 그대로) */}
-                          <span className={color}>{amount || ""}</span>
-                          {/* 두번째 줄: +, - 기호 모두 제거하고 수치와 %만 표시 */}
-                          <span className={color}>{formatPercent(change).replace(/[+-]/g, '')}</span>
+                        <span className={`text-4xl font-black ${color}`}>
+                          {hasValue ? value : ""}
+                        </span>
+                        <div className="flex flex-col text-[14px] font-bold leading-tight items-end">
+                          <span className={color}>{hasAmount ? amount : ""}</span>
+                          <span className={color}>{hasChange ? formatPercent(change).replace(/[+-]/g, '') : ""}</span>
                         </div>
                       </div>
                     </div>
@@ -408,7 +473,7 @@ const App = () => {
                       ) : (
                         <div className="bg-[#121926] px-4 py-2 rounded-xl shadow-sm border border-slate-100">
                           <h2 className="text-[13px] font-bold text-white flex items-center gap-2">
-                            🔥 {activeReport.data.realtimeStocks.length > 0 ? '30초 간격' : '당일 누적'}
+                            {activeReport.data.realtimeStocks.length > 0 ? '30초 간격' : '당일 누적'}
                           </h2>
                         </div>
                       )}
@@ -421,8 +486,8 @@ const App = () => {
                         <tr>
                           <th className="p-4 pl-7 w-[60px]">순위</th>
                           <th className="p-4 w-[180px]">종목명</th>
-                          <th className="p-4 text-right w-[120px]">기준시점주가</th>
-                          <th className="p-4 pr-7 text-right w-[120px]">기준시점등락률</th>
+                          <th className="p-4 text-right w-[120px]">주가</th>
+                          <th className="p-4 pr-7 text-right w-[120px]">등락률</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -452,20 +517,21 @@ const App = () => {
                 <div className="xl:col-span-5 space-y-6">
                   {/* 테마 섹션 */}
                   {[{id: 'themesByRank', title: '조회순위순', dark: true}, {id: 'themesByChange', title: '등락률순', dark: false}].map(section => (
-                    <div key={section.id} className={`${section.dark ? 'bg-[#121926] text-white border-slate-800' : 'bg-white text-slate-900 border-slate-100'} p-8 rounded-[2.5rem] shadow-2xl relative overflow-hidden border`}>
-                      <div className={`flex items-center gap-3 mb-8 border-b ${section.dark ? 'border-slate-800' : 'border-slate-50'} pb-5`}>
-                        <span className={`p-2.5 ${section.dark ? 'bg-slate-800 text-rose-400' : 'bg-indigo-50 text-indigo-600'} rounded-2xl shadow-inner`}><Search size={22} /></span>
-                        <h3 className="text-xl font-black tracking-tighter">{section.title} (TOP 10)</h3>
+                    <div key={section.id} className={`${section.dark ? 'bg-[#121926] text-white border-slate-800' : 'bg-white text-slate-900 border-slate-100'} p-7 rounded-[2.5rem] shadow-xl relative overflow-hidden border`}>
+                      <div className={`flex items-center gap-3 mb-6 border-b ${section.dark ? 'border-slate-800' : 'border-slate-50'} pb-4`}>
+                        <span className={`p-2 ${section.dark ? 'bg-slate-800 text-rose-400' : 'bg-indigo-50 text-indigo-600'} rounded-xl`}><Search size={18} /></span>
+                        <h3 className="text-lg font-black tracking-tighter">{section.title} TOP 10</h3>
                       </div>
-                      <div className="space-y-3.5">
+                      <div className="space-y-2.5">
                         {activeReport.data[section.id]?.map((theme, idx) => {
                           const tColor = getTrendColor(theme.changePercent);
                           return (
-                            <div key={idx} className={`flex justify-between items-center p-4 ${section.dark ? 'bg-white/5 border-white/5 hover:bg-white/10' : 'bg-slate-50 border-l-4 rounded-r-2xl hover:translate-x-1'} border transition-all ${!section.dark && (tColor === 'text-rose-600' ? 'border-rose-500 bg-rose-50/50' : 'border-blue-400 bg-blue-50/50')}`}>
-                              <span className="font-bold">
-                                <span className={`${section.dark ? 'text-rose-500' : 'text-slate-400'} mr-2 opacity-50 font-black`}>{idx + 1}</span> {theme.name || "-"}
+                            <div key={idx} className={`flex justify-between items-center p-3.5 rounded-2xl ${section.dark ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-50 hover:bg-slate-100'} transition-all`}>
+                              <span className="font-bold flex items-center">
+                                <span className={`${section.dark ? 'text-rose-500' : 'text-slate-400'} mr-3 w-5 font-black text-xs`}>{idx + 1}</span> 
+                                <span className="truncate max-w-[150px]">{theme.name || "-"}</span>
                               </span>
-                              <span className={`font-black ${tColor}`}>{formatPercent(theme.changePercent)}</span>
+                              <span className={`font-black ${tColor} text-sm`}>{formatPercent(theme.changePercent)}</span>
                             </div>
                           );
                         })}
@@ -479,11 +545,11 @@ const App = () => {
         </div>
       </main>
       
-      {/* User Profile */}
-      <div className="absolute top-8 right-8 flex items-center gap-4 z-10">
-        <div className="flex items-center gap-2 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-slate-100">
-          <span className="text-[11px] font-bold text-slate-400 tracking-widest uppercase">PRO</span>
-          <div className="w-8 h-8 bg-gradient-to-tr from-amber-400 to-orange-500 rounded-full border-2 border-white shadow-sm"></div>
+      {/* User Profile Info */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-10">
+        <div className="flex items-center gap-2 bg-white/90 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-slate-100">
+          <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase">PRO PLAN</span>
+          <div className="w-8 h-8 bg-gradient-to-tr from-rose-400 to-rose-600 rounded-full border-2 border-white shadow-sm flex items-center justify-center text-white text-[10px] font-black">AI</div>
         </div>
       </div>
 
