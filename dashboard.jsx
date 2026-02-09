@@ -15,7 +15,8 @@ import {
   Calendar as CalendarIcon,
   ChevronRight,
   LayoutGrid,
-  X
+  X,
+  ChevronLeft
 } from 'lucide-react';
 
 // --- Gemini API Configuration ---
@@ -42,21 +43,23 @@ const App = () => {
 
   const [activeSlot, setActiveSlot] = useState('realtime'); // 현재 포커스된 슬롯
   const fileInputRef = useRef(null);
+  
+  // --- Calendar State & Ref ---
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+  const [currentViewDate, setCurrentViewDate] = useState(new Date(2026, 1, 10)); // 2026-02-10 기준
+  const calendarRef = useRef(null); // 외부 클릭 감지를 위한 ref
 
   // --- Helpers for Formatting & Color ---
   const getTrendColor = (val) => {
     if (val === undefined || val === null || val === "") return 'text-slate-600';
-    
     const str = val.toString().trim();
     if (str.startsWith('+')) return 'text-rose-600';
     if (str.startsWith('-')) return 'text-blue-600';
-    
     const num = parseFloat(str.replace(/[^0-9.-]/g, ""));
     if (!isNaN(num)) {
       if (num > 0) return 'text-rose-600';
       if (num < 0) return 'text-blue-600';
     }
-    
     return 'text-slate-600';
   };
 
@@ -82,7 +85,7 @@ const App = () => {
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
     updateSlot(activeSlot, files);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; 
   };
 
   const updateSlot = (slotId, files) => {
@@ -121,6 +124,21 @@ const App = () => {
     return () => window.removeEventListener('paste', handlePaste);
   }, [activeSlot]);
 
+  // --- Calendar Click Outside Logic ---
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (calendarRef.current && !calendarRef.current.contains(event.target)) {
+        setIsCalendarOpen(false);
+      }
+    };
+    if (isCalendarOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isCalendarOpen]);
+
   const removeFile = (slotId, id) => {
     setSlots(prev => {
       if (slotId === 'realtime' || slotId === 'cumulative') {
@@ -131,17 +149,45 @@ const App = () => {
     });
   };
 
-  // --- Report Deletion Function ---
   const deleteReport = (e, reportId) => {
-    e.stopPropagation(); // 부모 버튼의 onClick 이벤트 전파 방지
+    e.stopPropagation(); 
     setReports(prev => {
       const updated = prev.filter(r => r.id !== reportId);
-      // 만약 삭제하려는 탭이 현재 활성화된 탭이라면 다른 탭을 활성화하거나 null 처리
       if (activeTab === reportId) {
         setActiveTab(updated.length > 0 ? updated[updated.length - 1].id : null);
       }
       return updated;
     });
+  };
+
+  // --- Custom Calendar Logic ---
+  const generateCalendarDays = () => {
+    const year = currentViewDate.getFullYear();
+    const month = currentViewDate.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    
+    const days = [];
+    for (let i = 0; i < firstDay; i++) {
+      days.push(null);
+    }
+    for (let i = 1; i <= daysInMonth; i++) {
+      days.push(new Date(year, month, i));
+    }
+    return days;
+  };
+
+  const handleDateSelect = (date) => {
+    if (!date) return;
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    setSelectedDate(`${year}-${month}-${day}`);
+    setIsCalendarOpen(false);
+  };
+
+  const changeMonth = (offset) => {
+    setCurrentViewDate(new Date(currentViewDate.getFullYear(), currentViewDate.getMonth() + offset, 1));
   };
 
   // --- AI Data Extraction (Gemini API) ---
@@ -160,7 +206,6 @@ const App = () => {
 
     try {
       const payloadParts = [];
-      
       const fileToBase64 = (file) => new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
@@ -201,7 +246,6 @@ const App = () => {
         주의: 등락 수치(ChangeAmount)는 부호(+ 또는 -)를 포함하여 추출하세요.
       `;
 
-      // Exponential backoff implementation for API calls
       const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
         try {
           const response = await fetch(url, options);
@@ -243,6 +287,7 @@ const App = () => {
 
       const newReport = {
         id: crypto.randomUUID(),
+        date: selectedDate,
         title: generateAutoTitle(parsedData.extractedTime),
         timestamp: parsedData.extractedTime || "현재",
         data: {
@@ -278,6 +323,7 @@ const App = () => {
     }
   };
 
+  const filteredReports = reports.filter(r => r.date === selectedDate);
   const activeReport = reports.find(r => r.id === activeTab);
 
   const UploadSlot = ({ id, label, current, max = 1 }) => {
@@ -364,13 +410,54 @@ const App = () => {
             <h1 className="text-lg font-bold tracking-tight">Market Analyzer</h1>
           </div>
           <div className="space-y-4">
-            <div className="w-full flex items-center justify-between bg-[#1E293B] px-4 py-3 rounded-xl border border-slate-700/50 group">
-              <div className="flex items-center gap-3">
-                <CalendarIcon className="w-4 h-4 text-slate-400 group-hover:text-rose-400" />
-                <span className="text-sm font-medium tracking-wide">{selectedDate}</span>
-              </div>
-              <ChevronRight className="w-4 h-4 text-slate-500" />
+            
+            {/* --- Custom Calendar Trigger & Popover --- */}
+            <div className="relative" ref={calendarRef}>
+              <button 
+                onClick={() => setIsCalendarOpen(!isCalendarOpen)} 
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all group ${isCalendarOpen ? 'bg-rose-500 border-rose-400 shadow-lg shadow-rose-900/20' : 'bg-[#1E293B] border-slate-700/50 hover:bg-[#2D3A4F]'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <CalendarIcon className={`w-4 h-4 ${isCalendarOpen ? 'text-white' : 'text-slate-400 group-hover:text-rose-400'}`} />
+                  <span className={`text-sm font-medium tracking-wide ${isCalendarOpen ? 'text-white' : 'text-white/90'}`}>{selectedDate}</span>
+                </div>
+                <ChevronRight className={`w-4 h-4 transition-transform ${isCalendarOpen ? 'text-white rotate-90' : 'text-slate-500'}`} />
+              </button>
+
+              {isCalendarOpen && (
+                <div className="absolute top-full left-0 right-0 mt-3 bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 z-50 text-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex justify-between items-center mb-4 px-1">
+                    <button onClick={() => changeMonth(-1)} className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"><ChevronLeft size={16} /></button>
+                    <span className="text-sm font-black tracking-tight">
+                      {currentViewDate.getFullYear()}년 {currentViewDate.getMonth() + 1}월
+                    </span>
+                    <button onClick={() => changeMonth(1)} className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors"><ChevronRight size={16} /></button>
+                  </div>
+                  <div className="grid grid-cols-7 gap-1 mb-2">
+                    {['일', '월', '화', '수', '목', '금', '토'].map(d => (
+                      <div key={d} className="text-[10px] font-black text-slate-300 text-center">{d}</div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-7 gap-1">
+                    {generateCalendarDays().map((date, i) => {
+                      if (!date) return <div key={`empty-${i}`} className="p-2"></div>;
+                      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                      const isSelected = selectedDate === dateStr;
+                      return (
+                        <button 
+                          key={dateStr}
+                          onClick={() => handleDateSelect(date)}
+                          className={`p-2 text-[11px] font-bold rounded-lg transition-all ${isSelected ? 'bg-rose-500 text-white shadow-md shadow-rose-200 scale-110' : 'hover:bg-slate-50 text-slate-600'}`}
+                        >
+                          {date.getDate()}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
+            
             <div className="flex items-center gap-2 px-1">
               <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
               <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase">분석 준비 완료</span>
@@ -402,10 +489,10 @@ const App = () => {
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 bg-[#f8fafc]">
-        {reports.length > 0 && (
+        {filteredReports.length > 0 && (
           <nav className="p-4 md:px-10 bg-white border-b border-slate-100 overflow-x-auto">
             <div className="flex gap-2 max-w-7xl mx-auto">
-              {reports.map((report) => (
+              {filteredReports.map((report) => (
                 <div 
                   key={report.id}
                   className={`flex items-center gap-1 pl-5 pr-3 py-2.5 rounded-full font-bold transition-all group ${activeTab === report.id ? 'bg-[#121926] text-white shadow-xl scale-105' : 'bg-white text-slate-500 border border-slate-100 shadow-sm hover:border-slate-300'}`}
@@ -429,14 +516,16 @@ const App = () => {
         )}
 
         <div className="flex-1 overflow-y-auto p-6 md:p-10">
-          {!activeReport ? (
+          {!activeReport || activeReport.date !== selectedDate ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-6">
               <div className="w-32 h-32 bg-white rounded-[40px] shadow-2xl shadow-slate-200/50 flex items-center justify-center border border-slate-50 relative">
                 <Search className="w-12 h-12 text-slate-100" />
               </div>
               <div className="text-center">
                 <p className="text-2xl font-black text-slate-300 tracking-tight">{selectedDate}</p>
-                <p className="text-[13px] font-medium text-slate-400 mt-2">스크린샷을 업로드하고 AI 분석 리포트를 확인하세요</p>
+                <p className="text-[13px] font-medium text-slate-400 mt-2">
+                  {filteredReports.length > 0 ? '상단 탭에서 리포트를 선택하세요' : '이 날짜에 생성된 리포트가 없습니다'}
+                </p>
               </div>
             </div>
           ) : (
@@ -448,12 +537,9 @@ const App = () => {
                   const value = activeReport.data.marketStatus[market];
                   const change = activeReport.data.marketStatus[`${market}Change`];
                   const amount = activeReport.data.marketStatus[`${market}ChangeAmount`];
-                  
-                  // 정보 유무 확인 (기본값 "-", "0", "0.00" 등은 공백 처리)
                   const hasValue = value && value !== "-" && value !== "0" && value !== 0;
                   const hasAmount = amount && amount !== "0.00" && amount !== "+0.00" && amount !== "-0.00";
                   const hasChange = change && change !== "0%" && change !== "0.00%";
-
                   const color = getTrendColor(change);
                   return (
                     <div key={market} className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 min-h-[120px]">
@@ -517,18 +603,11 @@ const App = () => {
                         {(reportViewMode === 'realtime' ? activeReport.data?.realtimeStocks : activeReport.data?.cumulativeStocks)?.map((stock, idx) => {
                           const trendColor = getTrendColor(stock.changePercent);
                           return (
-                            <tr 
-                              key={idx} 
-                              className={`${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-slate-100/50 transition-colors`}
-                            >
+                            <tr key={idx} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-slate-100/50 transition-colors`}>
                               <td className="p-4 pl-7 font-black text-slate-800 truncate">{stock.rank || idx + 1}</td>
                               <td className="p-4 font-bold text-slate-800 truncate">{stock.name || "-"}</td>
-                              <td className={`p-4 font-bold text-right ${trendColor} tabular-nums truncate`}>
-                                {formatPrice(stock.price)}
-                              </td>
-                              <td className={`p-4 pr-7 text-right font-black ${trendColor} truncate`}>
-                                {formatPercent(stock.changePercent)}
-                              </td>
+                              <td className={`p-4 font-bold text-right ${trendColor} tabular-nums truncate`}>{formatPrice(stock.price)}</td>
+                              <td className={`p-4 pr-7 text-right font-black ${trendColor} truncate`}>{formatPercent(stock.changePercent)}</td>
                             </tr>
                           );
                         })}
@@ -538,7 +617,6 @@ const App = () => {
                 </div>
 
                 <div className="xl:col-span-5 space-y-6">
-                  {/* 테마 섹션 */}
                   {[{id: 'themesByRank', title: '조회순위순', dark: true}, {id: 'themesByChange', title: '등락률순', dark: false}].map(section => (
                     <div key={section.id} className={`${section.dark ? 'bg-[#121926] text-white border-slate-800' : 'bg-white text-slate-900 border-slate-100'} p-7 rounded-[2.5rem] shadow-xl relative overflow-hidden border`}>
                       <div className={`flex items-center gap-3 mb-6 border-b ${section.dark ? 'border-slate-800' : 'border-slate-50'} pb-4`}>
