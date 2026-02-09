@@ -131,6 +131,19 @@ const App = () => {
     });
   };
 
+  // --- Report Deletion Function ---
+  const deleteReport = (e, reportId) => {
+    e.stopPropagation(); // 부모 버튼의 onClick 이벤트 전파 방지
+    setReports(prev => {
+      const updated = prev.filter(r => r.id !== reportId);
+      // 만약 삭제하려는 탭이 현재 활성화된 탭이라면 다른 탭을 활성화하거나 null 처리
+      if (activeTab === reportId) {
+        setActiveTab(updated.length > 0 ? updated[updated.length - 1].id : null);
+      }
+      return updated;
+    });
+  };
+
   // --- AI Data Extraction (Gemini API) ---
   const runAnalysis = async () => {
     const hasRealtime = slots.realtime.length > 0;
@@ -393,13 +406,23 @@ const App = () => {
           <nav className="p-4 md:px-10 bg-white border-b border-slate-100 overflow-x-auto">
             <div className="flex gap-2 max-w-7xl mx-auto">
               {reports.map((report) => (
-                <button 
-                  key={report.id} 
-                  onClick={() => { setActiveTab(report.id); setReportViewMode(report.data.realtimeStocks.length > 0 ? 'realtime' : 'cumulative'); }} 
-                  className={`flex items-center gap-2 px-6 py-2.5 rounded-full font-bold whitespace-nowrap transition-all ${activeTab === report.id ? 'bg-[#121926] text-white shadow-xl scale-105' : 'bg-white text-slate-500 border border-slate-100 shadow-sm hover:border-slate-300'}`}
+                <div 
+                  key={report.id}
+                  className={`flex items-center gap-1 pl-5 pr-3 py-2.5 rounded-full font-bold transition-all group ${activeTab === report.id ? 'bg-[#121926] text-white shadow-xl scale-105' : 'bg-white text-slate-500 border border-slate-100 shadow-sm hover:border-slate-300'}`}
                 >
-                  <Clock size={16} /> {report.title}
-                </button>
+                  <button 
+                    onClick={() => { setActiveTab(report.id); setReportViewMode(report.data.realtimeStocks.length > 0 ? 'realtime' : 'cumulative'); }} 
+                    className="flex items-center gap-2 whitespace-nowrap"
+                  >
+                    <Clock size={16} /> {report.title}
+                  </button>
+                  <button 
+                    onClick={(e) => deleteReport(e, report.id)}
+                    className={`ml-2 p-1 rounded-full transition-colors ${activeTab === report.id ? 'hover:bg-slate-700 text-slate-400 hover:text-rose-400' : 'hover:bg-rose-100 text-slate-300 hover:text-rose-500'}`}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
               ))}
             </div>
           </nav>
